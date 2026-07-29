@@ -1,6 +1,8 @@
 # ai-gateway
 
 One Cloudflare Worker (free plan) that fronts every static AI project.
+**Deployed: <https://ai-gateway.draftsmith.workers.dev>** (see
+`gateway-url.txt`; `./gateway deploy` refreshes both).
 Static pages do everything except hold a shared secret; this gateway
 holds the API keys. Adding a project to it is a config entry, not a new
 deployment.
