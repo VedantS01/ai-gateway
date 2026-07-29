@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# gateway — convenience CLI for the ai-gateway Worker.
+#
+#   ./gateway add <name> --origin URL [--origin URL ...] [--model M]
+#                 [--api-base URL] [--key SECRET] [--max-body N]
+#   ./gateway list             show configured projects
+#   ./gateway deploy           deploy the Worker (records its URL)
+#   ./gateway secret NAME      set/rotate a provider key secret
+#   ./gateway probe <name>     hit the live GET endpoint for a project
+#   ./gateway url              print the deployed gateway URL
+#   ./gateway tail             live logs
+set -euo pipefail
+cd "$(dirname "$0")"
+cmd=${1:-help}
+shift || true
+
+case "$cmd" in
+  add)
+    python3 tools/add_project.py "$@"
+    echo "Added. Run ./gateway deploy to publish the config."
+    ;;
+  list)
+    python3 -c '
+import tomllib, json
+projects = json.loads(tomllib.load(open("wrangler.toml","rb"))["vars"]["PROJECTS"])
+for name, p in projects.items():
+    origins = ",".join(p.get("origins", [])) or "*"
+    print(f"{name:20} {p['"'"'model'"'"']:24} key={p['"'"'keySecret'"'"']}  origins={origins}")'
+    ;;
+  deploy)
+    npx wrangler deploy | tee /tmp/gateway-deploy.log
+    grep -oE "https://[a-z0-9.-]+\.workers\.dev" /tmp/gateway-deploy.log | head -1 > gateway-url.txt
+    echo "Gateway URL: $(cat gateway-url.txt) (saved to gateway-url.txt)"
+    ;;
+  secret)
+    npx wrangler secret put "${1:?usage: ./gateway secret KEY_NAME}"
+    ;;
+  probe)
+    name=${1:?usage: ./gateway probe <project>}
+    base=$(cat gateway-url.txt 2>/dev/null) || { echo "no gateway-url.txt — run ./gateway deploy first" >&2; exit 1; }
+    origin=$(python3 -c '
+import tomllib, json, sys
+p = json.loads(tomllib.load(open("wrangler.toml","rb"))["vars"]["PROJECTS"])[sys.argv[1]]
+print((p.get("origins") or ["http://localhost"])[0])' "$name")
+    curl -sS -H "Origin: $origin" "$base/v1/$name" && echo
+    ;;
+  url)
+    cat gateway-url.txt
+    ;;
+  tail)
+    npx wrangler tail
+    ;;
+  *)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac

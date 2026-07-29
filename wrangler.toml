@@ -22,7 +22,7 @@ PROJECTS = '''
       "http://127.0.0.1:8000"
     ],
     "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3.5-flash",
     "keySecret": "KEY_GEMINI"
   }
 }
