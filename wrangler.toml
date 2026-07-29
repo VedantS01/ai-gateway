@@ -1,0 +1,29 @@
+name = "ai-gateway"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+[vars]
+# One entry per project. Fields:
+#   origins      — Origin allowlist for the project's pages ([] = allow all;
+#                  keep localhost entries for testing built sites locally)
+#   apiBase      — OpenAI-compatible endpoint the key belongs to
+#                  (no /chat/completions suffix)
+#   model        — pinned server-side; clients cannot choose another
+#   keySecret    — name of the Worker secret holding the API key
+#                  (`npx wrangler secret put KEY_GEMINI`); one secret per
+#                  provider account, shared by any number of projects
+#   maxBodyBytes — optional request size cap (default 80000)
+PROJECTS = '''
+{
+  "draftsmith": {
+    "origins": [
+      "https://vedants01.github.io",
+      "http://localhost:8000",
+      "http://127.0.0.1:8000"
+    ],
+    "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "model": "gemini-2.5-flash",
+    "keySecret": "KEY_GEMINI"
+  }
+}
+'''
