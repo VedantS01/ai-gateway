@@ -9,6 +9,8 @@
 #   ./gateway probe <name>     hit the live GET endpoint for a project
 #   ./gateway url              print the deployed gateway URL
 #   ./gateway tail             live logs
+#   ./gateway migrate          apply D1 migrations to the credits ledger
+#   ./gateway dev              run locally against tools/mock_provider.mjs
 set -euo pipefail
 cd "$(dirname "$0")"
 cmd=${1:-help}
@@ -50,7 +52,18 @@ print((p.get("origins") or ["http://localhost"])[0])' "$name")
   tail)
     npx wrangler tail
     ;;
+  migrate)
+    npx wrangler d1 migrations apply ai-gateway-ledger --remote
+    ;;
+  dev)
+    # Local gateway on :18090 over a mock provider on :18089; secrets from
+    # .dev.vars (APPKEY_HISAB, ADMIN_KEY, KEY_ONE, KEY_TWO). See README.
+    MODE_FILE=/tmp/ai-gateway-mock-mode node tools/mock_provider.mjs &
+    trap 'kill $!' EXIT
+    npx wrangler d1 migrations apply ai-gateway-ledger --local -c tools/wrangler.test.toml
+    npx wrangler dev -c tools/wrangler.test.toml --local --port 18090
+    ;;
   *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac
