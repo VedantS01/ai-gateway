@@ -1,5 +1,5 @@
 name = "ai-gateway-test"
-main = "worker.js"
+main = "../worker.js"
 compatibility_date = "2026-07-01"
 [vars]
 PROJECTS = '''
@@ -12,3 +12,4 @@ PROJECTS = '''
 binding = "LEDGER"
 database_name = "ai-gateway-ledger"
 database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "../migrations"

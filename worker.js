@@ -117,6 +117,27 @@ function upstreamDetail(body) {
   return String(body || "").slice(0, 300);
 }
 
+/** Adds a successful call's tokens to the day's row for its model. */
+async function recordUsage(env, project, day, upstream, firstCallToday) {
+  let usage = {};
+  try { usage = JSON.parse(upstream.body)?.usage || {}; } catch { /* not JSON */ }
+  const prompt = Number(usage.prompt_tokens) || 0;
+  const completion = Number(usage.completion_tokens) || 0;
+  try {
+    await env.LEDGER
+      .prepare(
+        "INSERT INTO usage_daily (project, day, model, calls, prompt_tokens, completion_tokens, devices) VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6) " +
+          "ON CONFLICT(project, day, model) DO UPDATE SET calls = calls + 1, prompt_tokens = prompt_tokens + ?4, " +
+          "completion_tokens = completion_tokens + ?5, devices = devices + ?6"
+      )
+      .bind(project, day, upstream.model || "?", prompt, completion, firstCallToday ? 1 : 0)
+      .run();
+  } catch (error) {
+    // Accounting must never fail the answer.
+    console.log(`usage not recorded: ${error.message}`);
+  }
+}
+
 async function readJsonBody(request, cap) {
   const raw = await request.text();
   if (raw.length > cap) return { error: jsonError("request too large", 413) };
@@ -211,6 +232,23 @@ async function appRoute(request, env, name, project, action) {
     return json(listing, 200);
   }
 
+  if (action === "usage") {
+    // Tokens per day and model for the last N days: the provider bill before
+    // it arrives. App key, like /models.
+    if (!project.appKeySecret || request.headers.get("X-App-Key") !== env[project.appKeySecret])
+      return jsonError("bad app key", 401, {}, "auth");
+    const days = Math.min(90, Math.max(1, Number(new URL(request.url).searchParams.get("days")) || 30));
+    const since = utcDay(new Date(now.getTime() - (days - 1) * 86_400_000));
+    const { results } = await env.LEDGER
+      .prepare("SELECT day, model, calls, prompt_tokens, completion_tokens, devices FROM usage_daily WHERE project = ?1 AND day >= ?2 ORDER BY day, model")
+      .bind(name, since)
+      .all();
+    const { results: totals } = await env.LEDGER
+      .prepare("SELECT COUNT(*) AS devices, SUM(spent) AS spent, SUM(credits) AS credits FROM devices WHERE project = ?1")
+      .bind(name)
+      .all();
+    return json({ since, days: results, devices: totals[0] }, 200);
+  }
   if (action === "grant") {
     if (request.method !== "POST") return jsonError("POST only", 405);
     if (!env.ADMIN_KEY || request.headers.get("X-Admin-Key") !== env.ADMIN_KEY)
@@ -303,8 +341,10 @@ async function appRoute(request, env, name, project, action) {
         `no model answered (${upstream.model || "?"} ${upstream.status}: ${upstreamDetail(upstream.body)})`,
         503, headers, "upstream");
     }
+    if (upstream.status === 200) await recordUsage(env, name, today, upstream, charged.day_used === COST_PER_CALL);
     return new Response(upstream.body, { status: upstream.status, headers });
   }
+
   return jsonError("no such route", 404);
 }
 
@@ -317,7 +357,7 @@ export default {
       return jsonError("gateway misconfigured: PROJECTS is not valid JSON", 500);
     }
 
-    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant|models))?\/?$/);
+    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant|models|usage))?\/?$/);
     if (!match) return jsonError("no such route; expected /v1/<project>[/register|me|chat]", 404);
     const [, name, action] = match;
     const project = projects[name];
