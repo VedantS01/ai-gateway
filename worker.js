@@ -101,6 +101,17 @@ async function callUpstream(env, providers, payload) {
   return { ...last, exhausted: true };
 }
 
+/** The provider's own words, from `{error:{message}}`, Gemini's `[{error}]`, or raw text. */
+function upstreamDetail(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const error = (Array.isArray(parsed) ? parsed[0] : parsed)?.error;
+    const message = typeof error === "string" ? error : error?.message;
+    if (message) return String(message).slice(0, 300);
+  } catch { /* not JSON */ }
+  return String(body || "").slice(0, 300);
+}
+
 async function readJsonBody(request, cap) {
   const raw = await request.text();
   if (raw.length > cap) return { error: jsonError("request too large", 413) };
@@ -260,9 +271,9 @@ async function appRoute(request, env, name, project, action) {
         .bind(COST_PER_CALL, token)
         .run();
       headers["X-Credits-Remaining"] = String(charged.credits + COST_PER_CALL);
-      let detail = "";
-      try { detail = JSON.parse(upstream.body)?.error?.message || ""; } catch { /* not JSON */ }
-      return jsonError(`no model answered${detail ? `: ${detail}` : ""}`, 503, headers, "upstream");
+      return jsonError(
+        `no model answered (${upstream.model || "?"} ${upstream.status}: ${upstreamDetail(upstream.body)})`,
+        503, headers, "upstream");
     }
     return new Response(upstream.body, { status: upstream.status, headers });
   }
