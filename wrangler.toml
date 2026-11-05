@@ -49,4 +49,4 @@ PROJECTS = '''
 [[d1_databases]]
 binding = "LEDGER"
 database_name = "ai-gateway-ledger"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "16e47dc2-134c-4566-b57f-2c9350c79613"
