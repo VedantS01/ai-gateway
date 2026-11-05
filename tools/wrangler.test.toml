@@ -1,0 +1,14 @@
+name = "ai-gateway-test"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+[vars]
+PROJECTS = '''
+{ "hisab": { "credits": { "free": 3, "dailyCap": 2, "registrationsPerIpPerDay": 2 }, "appKeySecret": "APPKEY_HISAB",
+    "providers": [ { "apiBase": "http://127.0.0.1:18089", "model": "one", "keySecret": "KEY_ONE" },
+                   { "apiBase": "http://127.0.0.1:18089", "model": "two", "keySecret": "KEY_TWO" } ] },
+  "page": { "origins": ["http://localhost:8000"], "apiBase": "http://127.0.0.1:18089", "model": "pg", "keySecret": "KEY_ONE" } }
+'''
+[[d1_databases]]
+binding = "LEDGER"
+database_name = "ai-gateway-ledger"
+database_id = "00000000-0000-0000-0000-000000000000"

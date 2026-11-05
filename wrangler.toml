@@ -2,6 +2,11 @@ name = "ai-gateway"
 main = "worker.js"
 compatibility_date = "2026-07-01"
 
+# Run near the providers rather than near the phone: Gemini refuses some
+# edge locations outright ("User location is not supported").
+[placement]
+mode = "smart"
+
 [vars]
 # One entry per project. Fields:
 #   origins      — Origin allowlist for the project's pages ([] = allow all;
@@ -13,8 +18,24 @@ compatibility_date = "2026-07-01"
 #                  (`npx wrangler secret put KEY_GEMINI`); one secret per
 #                  provider account, shared by any number of projects
 #   maxBodyBytes — optional request size cap (default 80000)
+# App projects (phone apps, no Origin) add:
+#   credits      — { free, dailyCap, registrationsPerIpPerDay }: the ledger
+#                  lives in the LEDGER D1 database (migrations/)
+#   appKeySecret — Worker secret the app must present as X-App-Key
+#   providers    — ordered [{apiBase, model, keySecret}]; a rate-limited or
+#                  down provider falls through to the next
 PROJECTS = '''
 {
+  "hisab": {
+    "credits": { "free": 300, "dailyCap": 60, "registrationsPerIpPerDay": 5 },
+    "appKeySecret": "APPKEY_HISAB",
+    "maxBodyBytes": 400000,
+    "providers": [
+      { "apiBase": "https://api.deepseek.com", "model": "deepseek-chat", "keySecret": "KEY_DEEPSEEK" },
+      { "apiBase": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "keySecret": "KEY_GROQ" },
+      { "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-3.5-flash", "keySecret": "KEY_GEMINI" }
+    ]
+  },
   "draftsmith": {
     "origins": [
       "https://vedants01.github.io",
@@ -27,3 +48,10 @@ PROJECTS = '''
   }
 }
 '''
+
+# Credits ledger for app projects. Create once: `npx wrangler d1 create
+# ai-gateway-ledger`, paste its id here, then `./gateway migrate`.
+[[d1_databases]]
+binding = "LEDGER"
+database_name = "ai-gateway-ledger"
+database_id = "16e47dc2-134c-4566-b57f-2c9350c79613"

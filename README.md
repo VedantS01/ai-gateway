@@ -52,6 +52,44 @@ npx wrangler deploy
 
 The Worker lands at `https://ai-gateway.<account>.workers.dev`.
 
+## App projects: credits ledger
+
+A phone app has no Origin to allowlist, so an app project gets a
+**credits ledger** instead (Hisab is the first). Each install registers
+once and holds a bearer token; every model call costs one credit.
+
+- `POST /v1/<project>/register` with `X-App-Key` → `{ token, credits, dailyCap }`
+  (free grant per device; registrations capped per IP per day)
+- `GET /v1/<project>/me` with `Authorization: Bearer <token>` → balance,
+  today's use, the pinned model
+- `POST /v1/<project>/chat` (Bearer) → OpenAI `chat.completions`;
+  `messages`, `tools`, `tool_choice`, `response_format`, `temperature`,
+  `max_tokens` pass through, the model is pinned, one credit per call.
+  Replies carry `X-Credits-Remaining`, `X-Daily-Remaining`, `X-Model`.
+  Errors are coded: `credits` (402), `daily` (429), `auth` (401),
+  `upstream` (503, nothing charged).
+- `POST /v1/<project>/grant` with `X-Admin-Key` → top up a device. This is
+  where in-app purchases will land: the app sends the store receipt, the
+  gateway verifies it and grants.
+
+Config per project: `credits: { free, dailyCap, registrationsPerIpPerDay }`,
+`appKeySecret`, and an ordered `providers` list — a provider that answers
+429 or 5xx falls through to the next, so a free tier running dry degrades
+instead of failing. The ledger is a D1 database (`migrations/`):
+
+```sh
+npx wrangler d1 create ai-gateway-ledger   # once; paste the id into wrangler.toml
+./gateway migrate                           # apply migrations remotely
+./gateway secret APPKEY_HISAB               # the app's key (also a --dart-define)
+./gateway secret ADMIN_KEY                  # for /grant
+./gateway secret KEY_DEEPSEEK               # provider keys, one per account
+```
+
+Local check without any account: `./gateway dev` runs the Worker on
+:18090 over a mock provider; `curl -X POST localhost:18090/v1/hisab/register
+-H 'X-App-Key: test-app-key'` and go from there. Write `busy` or `down`
+to `/tmp/ai-gateway-mock-mode` to see the fallthrough and the refund.
+
 ## Add a project (each time)
 
 1. Add an entry to `PROJECTS` in `wrangler.toml` (origins, apiBase,
