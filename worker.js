@@ -96,7 +96,12 @@ async function callUpstream(env, providers, payload) {
     }
     const body = await upstream.text();
     last = { status: upstream.status, body, model: provider.model };
-    if (upstream.status !== 429 && upstream.status < 500) return last;
+    // Rate limits and outages fall through; so does Gemini refusing the edge
+    // location this request happened to run from ("User location is not
+    // supported"), which the next provider doesn't care about.
+    const unserved = upstream.status === 429 || upstream.status >= 500 ||
+      (upstream.status === 400 && /location is not supported/i.test(body));
+    if (!unserved) return last;
   }
   return { ...last, exhausted: true };
 }
@@ -107,7 +112,7 @@ function upstreamDetail(body) {
     const parsed = JSON.parse(body);
     const error = (Array.isArray(parsed) ? parsed[0] : parsed)?.error;
     const message = typeof error === "string" ? error : error?.message;
-    if (message) return String(message).slice(0, 300);
+    if (message) return String(message).slice(0, 500);
   } catch { /* not JSON */ }
   return String(body || "").slice(0, 300);
 }

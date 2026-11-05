@@ -2,6 +2,11 @@ name = "ai-gateway"
 main = "worker.js"
 compatibility_date = "2026-07-01"
 
+# Run near the providers rather than near the phone: Gemini refuses some
+# edge locations outright ("User location is not supported").
+[placement]
+mode = "smart"
+
 [vars]
 # One entry per project. Fields:
 #   origins      — Origin allowlist for the project's pages ([] = allow all;
