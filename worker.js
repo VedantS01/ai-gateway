@@ -188,6 +188,29 @@ async function appRoute(request, env, name, project, action) {
     return json({ token, credits: cfg.free, dailyCap: cfg.dailyCap, costPerCall: COST_PER_CALL, model: provider.model }, 201);
   }
 
+  if (action === "models") {
+    // Which models each provider serves right now (free tiers retire models
+    // without notice). App key, not a device token: it is operational, not
+    // something a phone asks.
+    if (!project.appKeySecret || request.headers.get("X-App-Key") !== env[project.appKeySecret])
+      return jsonError("bad app key", 401, {}, "auth");
+    const listing = {};
+    for (const p of providersOf(project)) {
+      const key = env[p.keySecret];
+      if (!key) { listing[p.model] = "secret not set"; continue; }
+      try {
+        const res = await fetch(`${p.apiBase}/models`, { headers: { Authorization: `Bearer ${key}` } });
+        const body = await res.json();
+        listing[p.model] = res.ok
+          ? (body.data || body.models || []).map((m) => m.id || m.name).sort()
+          : `${res.status}: ${upstreamDetail(JSON.stringify(body))}`;
+      } catch (error) {
+        listing[p.model] = `fetch failed: ${error.message}`;
+      }
+    }
+    return json(listing, 200);
+  }
+
   if (action === "grant") {
     if (request.method !== "POST") return jsonError("POST only", 405);
     if (!env.ADMIN_KEY || request.headers.get("X-Admin-Key") !== env.ADMIN_KEY)
@@ -294,7 +317,7 @@ export default {
       return jsonError("gateway misconfigured: PROJECTS is not valid JSON", 500);
     }
 
-    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant))?\/?$/);
+    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant|models))?\/?$/);
     if (!match) return jsonError("no such route; expected /v1/<project>[/register|me|chat]", 404);
     const [, name, action] = match;
     const project = projects[name];

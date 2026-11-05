@@ -32,7 +32,7 @@ PROJECTS = '''
     "maxBodyBytes": 400000,
     "providers": [
       { "apiBase": "https://api.deepseek.com", "model": "deepseek-chat", "keySecret": "KEY_DEEPSEEK" },
-      { "apiBase": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile", "keySecret": "KEY_GROQ" },
+      { "apiBase": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "keySecret": "KEY_GROQ" },
       { "apiBase": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-3.5-flash", "keySecret": "KEY_GEMINI" }
     ]
   },
