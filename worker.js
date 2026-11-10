@@ -17,12 +17,14 @@
  *   GET  /v1/<project>/me         Bearer    → balance and today's use
  *   POST /v1/<project>/chat       Bearer    → OpenAI chat.completions with
  *        messages, tools, tool_choice, response_format, temperature,
- *        max_tokens passed through; the model pinned; one credit per call
+ *        max_tokens passed through; the model pinned; one credit per call,
+ *        paid from today's free allowance (dailyCap) first and from the
+ *        banked balance (free grant + top-ups) only once that is spent
  *   POST /v1/<project>/grant      X-Admin-Key → top up a device (for
  *        support now, in-app purchase receipts later)
  *
  * Abuse posture: pages have an origin allowlist; apps have an app key,
- * a free grant per device, a daily cap per device and a registration cap
+ * a free grant per device, a free daily allowance per device and a registration cap
  * per IP per day. The model is pinned server-side everywhere and only
  * known request fields are forwarded. Providers are tried in order, so a
  * rate-limited or down provider falls through to the next. Keep gateway
@@ -304,25 +306,30 @@ async function appRoute(request, env, name, project, action) {
     for (const field of CHAT_FIELDS) if (body[field] !== undefined) payload[field] = body[field];
     payload.stream = false;
 
-    // Charge first, atomically; refund if no provider answers.
+    // Charge first, atomically; refund if no provider answers. Today's free
+    // allowance (dailyCap) pays first; the balance pays only once it is spent.
+    // SET expressions all read the row as it was, so `used` is today's use
+    // before this call.
+    const used = "(CASE WHEN day = ?1 THEN day_used ELSE 0 END)";
     const charged = await env.LEDGER
       .prepare(
-        "UPDATE devices SET credits = credits - ?5, spent = spent + ?5, " +
+        `UPDATE devices SET credits = credits - CASE WHEN ${used} + ?5 <= ?6 THEN 0 ELSE ?5 END, ` +
+          "spent = spent + ?5, " +
           "day_used = CASE WHEN day = ?1 THEN day_used + ?5 ELSE ?5 END, day = ?1, last_seen = ?2 " +
-          "WHERE token = ?3 AND project = ?4 AND credits >= ?5 AND (day != ?1 OR day_used + ?5 <= ?6) " +
+          `WHERE token = ?3 AND project = ?4 AND (${used} + ?5 <= ?6 OR credits >= ?5) ` +
           "RETURNING credits, day_used"
       )
       .bind(today, stamp, token, name, COST_PER_CALL, cfg.dailyCap)
       .first();
     if (!charged) {
       const device = await env.LEDGER
-        .prepare("SELECT credits, day, day_used FROM devices WHERE token = ?1 AND project = ?2")
+        .prepare("SELECT credits FROM devices WHERE token = ?1 AND project = ?2")
         .bind(token, name)
         .first();
       if (!device) return jsonError("unknown device; register again", 401, {}, "auth");
-      if (device.credits < COST_PER_CALL) return jsonError("no credits left", 402, {}, "credits");
-      return jsonError("daily limit reached; try tomorrow", 429, {}, "daily");
+      return jsonError("no credits left today and none banked", 402, {}, "credits");
     }
+    const fromBalance = charged.day_used > cfg.dailyCap ? COST_PER_CALL : 0;
 
     const upstream = await callUpstream(env, providersOf(project), payload);
     const headers = {
@@ -333,10 +340,11 @@ async function appRoute(request, env, name, project, action) {
     };
     if (upstream.exhausted) {
       await env.LEDGER
-        .prepare("UPDATE devices SET credits = credits + ?1, spent = spent - ?1, day_used = MAX(0, day_used - ?1) WHERE token = ?2")
-        .bind(COST_PER_CALL, token)
+        .prepare("UPDATE devices SET credits = credits + ?3, spent = spent - ?1, day_used = MAX(0, day_used - ?1) WHERE token = ?2")
+        .bind(COST_PER_CALL, token, fromBalance)
         .run();
-      headers["X-Credits-Remaining"] = String(charged.credits + COST_PER_CALL);
+      headers["X-Credits-Remaining"] = String(charged.credits + fromBalance);
+      headers["X-Daily-Remaining"] = String(Math.max(0, cfg.dailyCap - charged.day_used + COST_PER_CALL));
       return jsonError(
         `no model answered (${upstream.model || "?"} ${upstream.status}: ${upstreamDetail(upstream.body)})`,
         503, headers, "upstream");
