@@ -56,7 +56,9 @@ The Worker lands at `https://ai-gateway.<account>.workers.dev`.
 
 A phone app has no Origin to allowlist, so an app project gets a
 **credits ledger** instead (Hisab is the first). Each install registers
-once and holds a bearer token; every model call costs one credit.
+once and holds a bearer token; every model call costs one credit, paid
+from today's free allowance (`dailyCap`) first and from the banked balance
+(free grant + top-ups) only once today's allowance is spent.
 
 - `POST /v1/<project>/register` with `X-App-Key` → `{ token, credits, dailyCap }`
   (free grant per device; registrations capped per IP per day)
@@ -66,7 +68,7 @@ once and holds a bearer token; every model call costs one credit.
   `messages`, `tools`, `tool_choice`, `response_format`, `temperature`,
   `max_tokens` pass through, the model is pinned, one credit per call.
   Replies carry `X-Credits-Remaining`, `X-Daily-Remaining`, `X-Model`.
-  Errors are coded: `credits` (402), `daily` (429), `auth` (401),
+  Errors are coded: `credits` (402: nothing free today, nothing banked), `auth` (401),
   `upstream` (503, nothing charged).
 - `POST /v1/<project>/grant` with `X-Admin-Key` → top up a device. This is
   where in-app purchases will land: the app sends the store receipt, the
