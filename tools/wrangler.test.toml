@@ -4,6 +4,8 @@ compatibility_date = "2026-07-01"
 [vars]
 PROJECTS = '''
 { "hisab": { "credits": { "free": 3, "dailyCap": 2, "registrationsPerIpPerDay": 2 }, "appKeySecret": "APPKEY_HISAB",
+    "store": { "bundleId": "com.vedants.hisab", "plusDailyCap": 5,
+      "products": { "com.vedants.hisab.credits.100": { "credits": 100 }, "com.vedants.hisab.plus.monthly": { "plus": true } } },
     "providers": [ { "apiBase": "http://127.0.0.1:18089", "model": "one", "keySecret": "KEY_ONE" },
                    { "apiBase": "http://127.0.0.1:18089", "model": "two", "keySecret": "KEY_TWO" } ] },
   "page": { "origins": ["http://localhost:8000"], "apiBase": "http://127.0.0.1:18089", "model": "pg", "keySecret": "KEY_ONE" } }

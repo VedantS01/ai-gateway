@@ -70,9 +70,23 @@ from today's free allowance (`dailyCap`) first and from the banked balance
   Replies carry `X-Credits-Remaining`, `X-Daily-Remaining`, `X-Model`.
   Errors are coded: `credits` (402: nothing free today, nothing banked), `auth` (401),
   `upstream` (503, nothing charged).
-- `POST /v1/<project>/grant` with `X-Admin-Key` → top up a device. This is
-  where in-app purchases will land: the app sends the store receipt, the
-  gateway verifies it and grants.
+- `POST /v1/<project>/grant` with `X-Admin-Key` → top up a device (support).
+- `POST /v1/<project>/purchase` (Bearer) with `{ jws }` → a StoreKit 2 signed
+  transaction. Verified in the Worker (x5c chain to Apple Root CA - G3,
+  pinned by SHA-256; Apple's marker OIDs; ES256), so no App Store Server API
+  key is needed. A credit pack is granted once per transaction id; a
+  subscription links to the device and lifts its daily allowance to
+  `store.plusDailyCap` while in date. Answers like `/me`, plus `plus`.
+- `POST /v1/<project>/notifications` → App Store Server Notifications v2
+  (renewals, expiry, refunds; a refunded pack's credits are taken back). Set
+  it as the app's production and sandbox notification URL in App Store
+  Connect.
+
+  Config: `store: { bundleId, plusDailyCap, products: { <id>: { credits } |
+  { plus: true } } }`. Local check: `node tools/test_jws.mjs chain <dir>`
+  makes a throwaway Apple-shaped chain; put the printed root in
+  `tools/.dev.vars` as `APPLE_ROOT_SHA256` and sign transactions with
+  `test_jws.mjs sign` / `notify`.
 
 Config per project: `credits: { free, dailyCap, registrationsPerIpPerDay }`,
 `appKeySecret`, and an ordered `providers` list — a provider that answers

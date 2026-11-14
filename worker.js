@@ -20,8 +20,15 @@
  *        max_tokens passed through; the model pinned; one credit per call,
  *        paid from today's free allowance (dailyCap) first and from the
  *        banked balance (free grant + top-ups) only once that is spent
- *   POST /v1/<project>/grant      X-Admin-Key → top up a device (for
- *        support now, in-app purchase receipts later)
+ *   POST /v1/<project>/grant      X-Admin-Key → top up a device (support)
+ *   POST /v1/<project>/purchase   Bearer, { jws } → an App Store signed
+ *        transaction (StoreKit 2), verified here against Apple's pinned
+ *        root: a credit pack is granted once per transaction id; a
+ *        subscription links to the device and raises its daily allowance
+ *        while it is in date. Answers like /me.
+ *   POST /v1/<project>/notifications   App Store Server Notifications v2
+ *        ({ signedPayload }): renewals, expiry and refunds, verified the same
+ *        way. Set as the app's server notification URL in App Store Connect.
  *
  * Abuse posture: pages have an origin allowlist; apps have an app key,
  * a free grant per device, a free daily allowance per device and a registration cap
@@ -30,6 +37,8 @@
  * rate-limited or down provider falls through to the next. Keep gateway
  * keys billing-free so the providers' own limits are the spend ceiling.
  */
+
+import { verifyAppleJws, JwsError } from "./apple_jws.js";
 
 const DEFAULT_MAX_BODY_BYTES = 80_000;
 const DEFAULT_CREDITS = { free: 300, dailyCap: 60, registrationsPerIpPerDay: 5 };
@@ -272,28 +281,59 @@ async function appRoute(request, env, name, project, action) {
     return json({ credits: updated.credits }, 200);
   }
 
+  if (action === "notifications") {
+    if (request.method !== "POST") return jsonError("POST only", 405);
+    if (!project.store) return jsonError("no store configured", 404);
+    const { body, error } = await readJsonBody(request, 64_000);
+    if (error) return error;
+    const pin = { rootSha256: env.APPLE_ROOT_SHA256 || undefined };
+    try {
+      const note = await verifyAppleJws(body?.signedPayload, pin);
+      const data = note.data || {};
+      // Apple retries anything but 2xx; what is not ours is acknowledged.
+      if (data.bundleId !== project.store.bundleId || !data.signedTransactionInfo) return json({ ok: true }, 200);
+      const tx = await verifyAppleJws(data.signedTransactionInfo, pin);
+      await applyNotification(env, name, project.store, note.notificationType, tx, stamp);
+      return json({ ok: true }, 200);
+    } catch (e) {
+      if (e instanceof JwsError) return jsonError(`notification not verified: ${e.message}`, 400, {}, "purchase");
+      throw e;
+    }
+  }
+
   const auth = request.headers.get("Authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!token) return jsonError("missing bearer token; register first", 401, {}, "auth");
+  // Today's free allowance: the project's, or the subscriber's while a
+  // subscription on this device is in date.
+  const plus = project.store ? await plusActive(env, name, token, now) : false;
+  const dailyCap = plus ? (project.store.plusDailyCap || cfg.dailyCap) : cfg.dailyCap;
 
-  if (action === "me") {
-    if (request.method !== "GET") return jsonError("GET only", 405);
+  if (action === "purchase") {
+    if (request.method !== "POST") return jsonError("POST only", 405);
+    if (!project.store) return jsonError("no store configured", 404);
+    const { body, error } = await readJsonBody(request, 64_000);
+    if (error) return error;
+    let tx;
+    try {
+      tx = await verifyAppleJws(body?.jws, { rootSha256: env.APPLE_ROOT_SHA256 || undefined });
+    } catch (e) {
+      if (e instanceof JwsError) return jsonError(`purchase not verified: ${e.message}`, 400, {}, "purchase");
+      throw e;
+    }
     const device = await env.LEDGER
-      .prepare("SELECT credits, granted, spent, day, day_used FROM devices WHERE token = ?1 AND project = ?2")
+      .prepare("SELECT token FROM devices WHERE token = ?1 AND project = ?2")
       .bind(token, name)
       .first();
     if (!device) return jsonError("unknown device; register again", 401, {}, "auth");
-    const dailyUsed = device.day === today ? device.day_used : 0;
-    return json({
-      credits: device.credits,
-      granted: device.granted,
-      spent: device.spent,
-      dailyCap: cfg.dailyCap,
-      dailyUsed,
-      dailyRemaining: Math.max(0, cfg.dailyCap - dailyUsed),
-      costPerCall: COST_PER_CALL,
-      model: provider.model,
-    }, 200);
+    const problem = await applyPurchase(env, name, project.store, tx, token, stamp);
+    if (problem) return jsonError(problem, 400, {}, "purchase");
+    return meResponse(env, name, project, cfg, token, today, now, provider);
+  }
+
+  if (action === "me") {
+    if (request.method !== "GET") return jsonError("GET only", 405);
+    return meResponse(env, name, project, cfg, token, today, now, provider);
   }
 
   if (action === "chat") {
@@ -319,7 +359,7 @@ async function appRoute(request, env, name, project, action) {
           `WHERE token = ?3 AND project = ?4 AND (${used} + ?5 <= ?6 OR credits >= ?5) ` +
           "RETURNING credits, day_used"
       )
-      .bind(today, stamp, token, name, COST_PER_CALL, cfg.dailyCap)
+      .bind(today, stamp, token, name, COST_PER_CALL, dailyCap)
       .first();
     if (!charged) {
       const device = await env.LEDGER
@@ -329,13 +369,13 @@ async function appRoute(request, env, name, project, action) {
       if (!device) return jsonError("unknown device; register again", 401, {}, "auth");
       return jsonError("no credits left today and none banked", 402, {}, "credits");
     }
-    const fromBalance = charged.day_used > cfg.dailyCap ? COST_PER_CALL : 0;
+    const fromBalance = charged.day_used > dailyCap ? COST_PER_CALL : 0;
 
     const upstream = await callUpstream(env, providersOf(project), payload);
     const headers = {
       "Content-Type": "application/json",
       "X-Credits-Remaining": String(charged.credits),
-      "X-Daily-Remaining": String(Math.max(0, cfg.dailyCap - charged.day_used)),
+      "X-Daily-Remaining": String(Math.max(0, dailyCap - charged.day_used)),
       "X-Model": upstream.model || "",
     };
     if (upstream.exhausted) {
@@ -344,7 +384,7 @@ async function appRoute(request, env, name, project, action) {
         .bind(COST_PER_CALL, token, fromBalance)
         .run();
       headers["X-Credits-Remaining"] = String(charged.credits + fromBalance);
-      headers["X-Daily-Remaining"] = String(Math.max(0, cfg.dailyCap - charged.day_used + COST_PER_CALL));
+      headers["X-Daily-Remaining"] = String(Math.max(0, dailyCap - charged.day_used + COST_PER_CALL));
       return jsonError(
         `no model answered (${upstream.model || "?"} ${upstream.status}: ${upstreamDetail(upstream.body)})`,
         503, headers, "upstream");
@@ -356,6 +396,107 @@ async function appRoute(request, env, name, project, action) {
   return jsonError("no such route", 404);
 }
 
+/* ---------- App Store ---------- */
+
+async function plusActive(env, project, token, now) {
+  const row = await env.LEDGER
+    .prepare("SELECT 1 AS on_ FROM subscriptions WHERE token = ?1 AND project = ?2 AND revoked = 0 AND expires_ms > ?3 LIMIT 1")
+    .bind(token, project, now.getTime())
+    .first();
+  return !!row;
+}
+
+async function meResponse(env, name, project, cfg, token, today, now, provider) {
+  const device = await env.LEDGER
+    .prepare("SELECT credits, granted, spent, day, day_used FROM devices WHERE token = ?1 AND project = ?2")
+    .bind(token, name)
+    .first();
+  if (!device) return jsonError("unknown device; register again", 401, {}, "auth");
+  const sub = project.store
+    ? await env.LEDGER
+        .prepare("SELECT product_id, expires_ms FROM subscriptions WHERE token = ?1 AND project = ?2 AND revoked = 0 AND expires_ms > ?3 ORDER BY expires_ms DESC LIMIT 1")
+        .bind(token, name, now.getTime())
+        .first()
+    : null;
+  const dailyCap = sub ? (project.store.plusDailyCap || cfg.dailyCap) : cfg.dailyCap;
+  const dailyUsed = device.day === today ? device.day_used : 0;
+  return json({
+    credits: device.credits,
+    granted: device.granted,
+    spent: device.spent,
+    dailyCap,
+    dailyUsed,
+    dailyRemaining: Math.max(0, dailyCap - dailyUsed),
+    costPerCall: COST_PER_CALL,
+    model: provider.model,
+    plus: sub ? { product: sub.product_id, expires: new Date(sub.expires_ms).toISOString() } : null,
+  }, 200);
+}
+
+/** A verified StoreKit transaction presented by a device. Null when applied,
+ *  or why it was refused. Idempotent: a credit pack is granted once per
+ *  transaction id however often it is presented. */
+async function applyPurchase(env, name, store, tx, token, stamp) {
+  if (tx.bundleId !== store.bundleId) return "transaction is for another app";
+  const product = store.products?.[tx.productId];
+  if (!product) return `unknown product ${tx.productId}`;
+  if (tx.revocationDate) return "transaction was refunded";
+  if (product.credits) {
+    const inserted = await env.LEDGER
+      .prepare("INSERT OR IGNORE INTO grants (id, token, credits, source, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+      .bind(`iap:${tx.transactionId}`, token, product.credits, `iap:${tx.productId}:${tx.environment || ""}`, stamp)
+      .run();
+    if (inserted.meta.changes > 0) {
+      await env.LEDGER
+        .prepare("UPDATE devices SET credits = credits + ?1, granted = granted + ?1 WHERE token = ?2 AND project = ?3")
+        .bind(product.credits, token, name)
+        .run();
+    }
+    return null;
+  }
+  if (product.plus) {
+    await env.LEDGER
+      .prepare(
+        "INSERT INTO subscriptions (original_transaction_id, token, project, product_id, expires_ms, revoked, environment, updated_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7) " +
+          "ON CONFLICT (original_transaction_id, token) DO UPDATE SET product_id = ?4, " +
+          "expires_ms = MAX(expires_ms, ?5), revoked = 0, environment = ?6, updated_at = ?7"
+      )
+      .bind(String(tx.originalTransactionId), token, name, tx.productId, Number(tx.expiresDate) || 0, tx.environment || "", stamp)
+      .run();
+    return null;
+  }
+  return `product ${tx.productId} grants nothing`;
+}
+
+/** Apple's word on a transaction, unprompted: a renewal moves the
+ *  subscription's expiry, a refund or revocation ends it, and a refunded
+ *  credit pack takes back what is left of its credits. */
+async function applyNotification(env, name, store, type, tx, stamp) {
+  const product = store.products?.[tx.productId];
+  if (!product) return;
+  const revoked = tx.revocationDate || type === "REFUND" || type === "REVOKE";
+  if (product.plus) {
+    await env.LEDGER
+      .prepare("UPDATE subscriptions SET expires_ms = ?1, revoked = ?2, updated_at = ?3 WHERE original_transaction_id = ?4 AND project = ?5")
+      .bind(Number(tx.expiresDate) || 0, revoked ? 1 : 0, stamp, String(tx.originalTransactionId), name)
+      .run();
+    return;
+  }
+  if (product.credits && revoked) {
+    const grant = await env.LEDGER
+      .prepare("UPDATE grants SET source = source || ':refunded' WHERE id = ?1 AND source NOT LIKE '%:refunded' RETURNING token, credits")
+      .bind(`iap:${tx.transactionId}`)
+      .first();
+    if (grant) {
+      await env.LEDGER
+        .prepare("UPDATE devices SET credits = MAX(0, credits - ?1) WHERE token = ?2 AND project = ?3")
+        .bind(grant.credits, grant.token, name)
+        .run();
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     let projects;
@@ -365,7 +506,7 @@ export default {
       return jsonError("gateway misconfigured: PROJECTS is not valid JSON", 500);
     }
 
-    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant|models|usage))?\/?$/);
+    const match = new URL(request.url).pathname.match(/^\/v1\/([\w-]+)(?:\/(register|me|chat|grant|models|usage|purchase|notifications))?\/?$/);
     if (!match) return jsonError("no such route; expected /v1/<project>[/register|me|chat]", 404);
     const [, name, action] = match;
     const project = projects[name];

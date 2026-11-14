@@ -30,6 +30,15 @@ PROJECTS = '''
     "credits": { "free": 300, "dailyCap": 60, "registrationsPerIpPerDay": 5 },
     "appKeySecret": "APPKEY_HISAB",
     "maxBodyBytes": 400000,
+    "store": {
+      "bundleId": "com.vedants.hisab",
+      "plusDailyCap": 300,
+      "products": {
+        "com.vedants.hisab.credits.100": { "credits": 100 },
+        "com.vedants.hisab.credits.500": { "credits": 500 },
+        "com.vedants.hisab.plus.monthly": { "plus": true }
+      }
+    },
     "providers": [
       { "apiBase": "https://api.deepseek.com", "model": "deepseek-chat", "keySecret": "KEY_DEEPSEEK" },
       { "apiBase": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "keySecret": "KEY_GROQ" },
